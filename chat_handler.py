@@ -5,6 +5,14 @@ Ondersteunt vrije tekst, tool use voor taken/mail/agenda.
 import json, os, uuid, re, requests, threading
 from datetime import datetime
 
+def _strip_html(html: str) -> str:
+    text = re.sub(r'<style[^>]*>.*?</style>', ' ', html, flags=re.DOTALL)
+    text = re.sub(r'<script[^>]*>.*?</script>', ' ', text, flags=re.DOTALL)
+    text = re.sub(r'<[^>]+>', ' ', text)
+    text = re.sub(r'&nbsp;|&#160;', ' ', text)
+    text = re.sub(r'&amp;', '&', text)
+    return re.sub(r'\s+', ' ', text).strip()
+
 from anthropic import Anthropic
 import storage, outlook_auth
 
@@ -99,6 +107,37 @@ TOOLS = [
             "required": ["mail_id"],
             "properties": {
                 "mail_id": {"type": "string", "description": "Graph API mail ID uit de sort log"},
+            },
+        },
+    },
+    {
+        "name": "lees_map",
+        "description": (
+            "Lees de inhoud van één of meerdere specifieke mailmappen. "
+            "Gebruik dit als je de daadwerkelijke mails wil zien om een vraag te beantwoorden, "
+            "bijvoorbeeld 'kijk in mijn schoolmap' of 'zijn er nieuwe facturen'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "required": ["mappen"],
+            "properties": {
+                "mappen": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Lijst van exacte mapnamen, bijv. "
+                        "[\"🎒 School — HL Leiden\", \"🧾 Facturen & Bonnetjes\"]. "
+                        "Gebruik 'Inbox' voor de inbox."
+                    ),
+                },
+                "alleen_ongelezen": {
+                    "type": "boolean",
+                    "description": "true = alleen ongelezen mails (standaard), false = ook al gelezen mails",
+                },
+                "max_per_map": {
+                    "type": "integer",
+                    "description": "Maximaal aantal mails per map terug te geven (standaard 10, max 25)",
+                },
             },
         },
     },
@@ -214,6 +253,61 @@ def _execute_tool(name: str, inputs: dict):
                 json={"destinationId": "inbox"}, timeout=10,
             )
             return {"ok": r.status_code in (200, 201)}
+        except Exception as e:
+            return {"error": str(e)}
+
+    elif name == "lees_map":
+        try:
+            token        = outlook_auth.get_token()
+            folders_data = outlook_auth.get_all_folders(token)
+            mappen       = inputs.get("mappen", [])
+            ongelezen    = inputs.get("alleen_ongelezen", True)
+            max_n        = min(int(inputs.get("max_per_map", 10)), 25)
+            select       = "id,subject,from,receivedDateTime,isRead,importance,hasAttachments,body"
+            resultaat    = {}
+
+            for map_naam in mappen:
+                folder = folders_data.get(map_naam)
+                if not folder:
+                    # Probeer hoofdletterongevoelig te matchen
+                    match = next(
+                        (v for k, v in folders_data.items() if k.lower() == map_naam.lower()),
+                        None,
+                    )
+                    if not match:
+                        resultaat[map_naam] = {"fout": f"Map '{map_naam}' niet gevonden"}
+                        continue
+                    folder = match
+
+                flt = "&$filter=isRead eq false" if ongelezen else ""
+                url = (
+                    f"{GRAPH}/me/mailFolders/{folder['id']}/messages"
+                    f"?$top={max_n}&$select={select}{flt}"
+                    f"&$orderby=receivedDateTime desc"
+                )
+                r = requests.get(url, headers=outlook_auth.hdrs(token), timeout=15)
+                if r.status_code != 200:
+                    resultaat[map_naam] = {"fout": f"API fout {r.status_code}"}
+                    continue
+
+                mails = []
+                for m in r.json().get("value", []):
+                    raw   = m.get("body", {}).get("content", "") or ""
+                    btype = m.get("body", {}).get("contentType", "text")
+                    body  = _strip_html(raw) if btype == "html" else re.sub(r'\s+', ' ', raw).strip()
+                    mails.append({
+                        "onderwerp":   m.get("subject", "") or "",
+                        "van":         m.get("from", {}).get("emailAddress", {}).get("name", ""),
+                        "van_adres":   m.get("from", {}).get("emailAddress", {}).get("address", ""),
+                        "datum":       m.get("receivedDateTime", "")[:10],
+                        "gelezen":     m.get("isRead", False),
+                        "belangrijk":  m.get("importance", "") == "high",
+                        "bijlage":     m.get("hasAttachments", False),
+                        "inhoud":      body[:600],
+                    })
+                resultaat[map_naam] = mails
+
+            return resultaat
         except Exception as e:
             return {"error": str(e)}
 
