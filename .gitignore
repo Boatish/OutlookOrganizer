@@ -1,0 +1,25 @@
+# Tokens en secrets — NOOIT op GitHub
+.token_cache
+.google_token.json
+google_credentials.json
+.env
+*.env
+
+# Lokale logbestanden
+*.log
+coach_debug.txt
+
+# Lokale state (staat in Supabase voor de cloud versie)
+actie_lijst.json
+sort_log.json
+.last_check
+.telegram_offset
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Windows
+Thumbs.db
+desktop.ini

@@ -1,0 +1,9 @@
+anthropic
+fastapi
+uvicorn[standard]
+apscheduler
+pytz
+httpx
+msal
+requests
+supabase
